@@ -1,0 +1,23 @@
+spring:
+  datasource:
+    driver-class-name: com.ibm.db2.jcc.DB2Driver
+
+ofac:
+  default-environment: dev
+
+  environments:
+    dev:
+      url: ${DEV_DB_URL:jdbc:db2://localhost:50000/PLDCLP1D}
+      user: ${DEV_DB_USER:clpr_bat}
+      password: ${DEV_DB_PASS:}
+      decryptKey: ${DEV_DB_DECRYPTKEY:}
+
+ofac:
+  output:
+    path: ${OFAC_OUTPUT_PATH:/opt/app/reports}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
