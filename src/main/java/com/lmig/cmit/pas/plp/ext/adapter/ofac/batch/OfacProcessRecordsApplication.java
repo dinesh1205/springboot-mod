@@ -5,49 +5,77 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
 
 @SpringBootApplication
-public class OfacProcessRecordsApplication {
+public class OfacProcessRecordsApplication implements CommandLineRunner {
 
     private static final Logger log = LoggerFactory.getLogger(OfacProcessRecordsApplication.class);
+    private final DataSource dataSource;
 
-    public static void main(String[] args) {
-        System.exit(SpringApplication.exit(SpringApplication.run(OfacProcessRecordsApplication.class, args)));
+    // Constructor injection
+    public OfacProcessRecordsApplication(DataSource dataSource) {
+        this.dataSource = dataSource;
     }
 
-    public CommandLineRunner runner(DataSource dataSource) {
-        return args -> {
-            int exitCode = 0;
-            try (Connection conn = dataSource.getConnection()) {
-                log.info(">>> Starting OFAC Process Records job");
-                if (args.length < 4) {
-                    log.error("Usage: <environment> <RESENDTRUE|NULL> <FULL|DELTA> <fileDate>");
-                    return;
-                }
+    public static void main(String[] args) {
+        int exitCode = SpringApplication.exit(SpringApplication.run(OfacProcessRecordsApplication.class, args));
+        System.exit(exitCode);
+    }
 
-                String environment = args[0];
-                boolean resend = "RESENDTRUE".equalsIgnoreCase(args[1]);
-                boolean full = "FULL".equalsIgnoreCase(args[2]);
-                String fileDate = args[3];
+    @Override
+    public void run(String... args) throws Exception {
+        int exitCode = 0;
+        Connection conn = null;
 
-                OfacConnect ofacConn = new OfacConnect();
-                ofacConn.initialize(environment);
+        try {
+            log.info(">>> Starting OFAC Process Records job");
 
-                OfacDbRoutines dbRoutines = new OfacDbRoutines(conn);
-                OfacResendRecordExtract orne = new OfacResendRecordExtract(resend, full, dbRoutines);
-                orne.buildRecordExtract(fileDate);
-
-                log.info("<<< OFAC Job Completed Successfully >>>");
-
-            } catch (Exception e) {
-                log.error("OFAC job failed", e);
-                exitCode = 1;
-            } finally {
-                SpringApplication.exit(SpringApplication.run(OfacProcessRecordsApplication.class), () -> exitCode);
+            // Validate input arguments
+            if (args.length < 4) {
+                log.error("Usage: <environment> <RESENDTRUE|NULL> <FULL|DELTA> <fileDate>");
+                System.exit(1);
             }
-        };
+
+            // Extract parameters
+            String environment = args[0];
+            boolean resend = "RESENDTRUE".equalsIgnoreCase(args[1]);
+            boolean full = "FULL".equalsIgnoreCase(args[2]);
+            String fileDate = args[3];
+
+            // Initialize connection
+            conn = dataSource.getConnection();
+            conn.setAutoCommit(false);
+
+            // Initialize OFAC utilities
+            OfacConnect ofacConn = new OfacConnect();
+            ofacConn.initialize(environment);
+
+            OfacDbRoutines dbRoutines = new OfacDbRoutines(conn);
+            OfacResendRecordExtract orne = new OfacResendRecordExtract(resend, full, dbRoutines);
+
+            // Execute extract process
+            orne.buildRecordExtract(fileDate);
+
+            log.info("<<< OFAC Job Completed Successfully >>>");
+            exitCode = 0;
+
+        } catch (Exception e) {
+            log.error("OFAC job failed", e);
+            exitCode = 1;
+
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.close();
+                } catch (Exception ex) {
+                    log.warn("Error closing connection", ex);
+                }
+            }
+            System.exit(exitCode);
+        }
     }
 }
