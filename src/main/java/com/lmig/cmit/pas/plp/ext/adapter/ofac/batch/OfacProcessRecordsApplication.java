@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.Bean;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -16,7 +15,6 @@ public class OfacProcessRecordsApplication implements CommandLineRunner {
     private static final Logger log = LoggerFactory.getLogger(OfacProcessRecordsApplication.class);
     private final DataSource dataSource;
 
-    // Constructor injection
     public OfacProcessRecordsApplication(DataSource dataSource) {
         this.dataSource = dataSource;
     }
@@ -34,30 +32,24 @@ public class OfacProcessRecordsApplication implements CommandLineRunner {
         try {
             log.info(">>> Starting OFAC Process Records job");
 
-            // Validate input arguments
             if (args.length < 4) {
                 log.error("Usage: <environment> <RESENDTRUE|NULL> <FULL|DELTA> <fileDate>");
                 System.exit(1);
             }
 
-            // Extract parameters
             String environment = args[0];
             boolean resend = "RESENDTRUE".equalsIgnoreCase(args[1]);
             boolean full = "FULL".equalsIgnoreCase(args[2]);
             String fileDate = args[3];
 
-            // Initialize connection
             conn = dataSource.getConnection();
             conn.setAutoCommit(false);
 
-            // Initialize OFAC utilities
             OfacConnect ofacConn = new OfacConnect();
             ofacConn.initialize(environment);
 
             OfacDbRoutines dbRoutines = new OfacDbRoutines(conn);
             OfacResendRecordExtract orne = new OfacResendRecordExtract(resend, full, dbRoutines);
-
-            // Execute extract process
             orne.buildRecordExtract(fileDate);
 
             log.info("<<< OFAC Job Completed Successfully >>>");
@@ -66,15 +58,8 @@ public class OfacProcessRecordsApplication implements CommandLineRunner {
         } catch (Exception e) {
             log.error("OFAC job failed", e);
             exitCode = 1;
-
         } finally {
-            if (conn != null) {
-                try {
-                    conn.close();
-                } catch (Exception ex) {
-                    log.warn("Error closing connection", ex);
-                }
-            }
+            if (conn != null) conn.close();
             System.exit(exitCode);
         }
     }
