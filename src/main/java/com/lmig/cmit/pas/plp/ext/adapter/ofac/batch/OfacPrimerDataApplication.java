@@ -8,81 +8,119 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import javax.sql.DataSource;
 import java.io.BufferedWriter;
-import java.io.File;
 import java.io.FileWriter;
+import java.io.IOException;
 import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 
+/**
+ * OFAC Primer Data Batch Job
+ * ---------------------------
+ * This job fetches resend-related information (resend date, week, etc.)
+ * and writes it to a text file. Optionally, it resets resend flags in the DB.
+ */
 @SpringBootApplication
-public class OfacPrimerDataApplication {
+public class OfacPrimerDataApplication implements CommandLineRunner {
 
     private static final Logger log = LoggerFactory.getLogger(OfacPrimerDataApplication.class);
+    private final DataSource dataSource;
 
-    public static void main(String[] args) {
-        System.exit(SpringApplication.exit(SpringApplication.run(OfacPrimerDataApplication.class, args)));
+    public OfacPrimerDataApplication(DataSource dataSource) {
+        this.dataSource = dataSource;
     }
 
-    public CommandLineRunner runner(DataSource dataSource) {
-        return args -> {
-            if (args.length < 3) {
-                log.error("Usage: <ENV> <filePath> <prime_data|reset_resend_date>");
-                return;
+    public static void main(String[] args) {
+        int exitCode = SpringApplication.exit(SpringApplication.run(OfacPrimerDataApplication.class, args));
+        System.exit(exitCode);
+    }
+
+    @Override
+    public void run(String... args) throws Exception {
+        int exitCode = 0;
+        Connection conn = null;
+
+        try {
+            log.info(">>> Starting OFAC Primer Data job");
+
+            if (args.length < 2) {
+                log.error("Usage: <environment> <RESETFLAG(TRUE|FALSE)>");
+                System.exit(1);
             }
 
             String environment = args[0];
-            String filePath = args[1];
-            String function = args[2];
+            boolean resetFlag = "TRUE".equalsIgnoreCase(args[1]);
 
-            int exitCode = 0;
-            try (Connection conn = dataSource.getConnection()) {
-                conn.setAutoCommit(true);
-                OfacConnect ofacConn = new OfacConnect();
-                ofacConn.initialize(environment);
-                OfacDbRoutines dbRoutines = new OfacDbRoutines(conn);
+            conn = dataSource.getConnection();
+            conn.setAutoCommit(false);
 
-                if ("prime_data".equalsIgnoreCase(function)) {
-                    primeData(filePath, dbRoutines);
-                } else if ("reset_resend_date".equalsIgnoreCase(function)) {
-                    int rows = resetResendDate(dbRoutines);
-                    log.info("Reset resend date, rows updated = {}", rows);
-                } else {
-                    log.error("Invalid function argument: {}", function);
-                }
+            OfacConnect ofacConn = new OfacConnect();
+            ofacConn.initialize(environment);
 
-            } catch (Exception e) {
-                log.error("OFAC Primer Data job failed", e);
-                exitCode = 1;
+            log.info("Connected to environment: {}", environment);
+
+            String outputFile = "./output/ofac_primer_data.txt";
+
+            // 1️⃣ Fetch resend date and week info
+            fetchPrimerData(conn, outputFile);
+
+            // 2️⃣ Reset resend date if requested
+            if (resetFlag) {
+                resetResendDate(conn);
             }
 
-            SpringApplication.exit(SpringApplication.run(OfacPrimerDataApplication.class), () -> exitCode);
-        };
-    }
+            conn.commit();
+            log.info("<<< OFAC Primer Data Job Completed Successfully >>>");
+            exitCode = 0;
 
-    private void primeData(String filePath, OfacDbRoutines dbRoutines) throws Exception {
-        log.info("Running prime_data job, output: {}", filePath);
-        String fileDate = getOfacResendDate(dbRoutines);
+        } catch (Exception e) {
+            log.error("OFAC Primer Data job failed", e);
+            if (conn != null) conn.rollback();
+            exitCode = 1;
 
-        StringBuilder sb = new StringBuilder();
-        sb.append("ofacResendDate:").append(fileDate).append(System.lineSeparator());
-        sb.append("ofacWeek:").append(getOfacResendWeek(dbRoutines)).append(System.lineSeparator());
-        sb.append("ofacDay:").append(getOfacResendDay(dbRoutines)).append(System.lineSeparator());
-        sb.append("ofacStandardReportWeek:").append(getOfacStandardReportWeek(dbRoutines)).append(System.lineSeparator());
-        sb.append("standardisedFileDate:").append(getStandardisedFileDate(dbRoutines, fileDate.trim())).append(System.lineSeparator());
-
-        File outputFile = new File(filePath);
-        outputFile.getParentFile().mkdirs();
-
-        try (BufferedWriter bw = new BufferedWriter(new FileWriter(outputFile))) {
-            bw.write(sb.toString());
+        } finally {
+            if (conn != null) conn.close();
+            System.exit(exitCode);
         }
-
-        log.info("Primer data file created successfully at {}", filePath);
     }
 
-    // Placeholder methods delegate to dbRoutines via SQL queries (same logic as legacy).
-    private String getOfacResendDate(OfacDbRoutines db) throws Exception { Object[] r = db.fetchRecords("select coalesce(VALUE,'') from COMPANYDB.LIST_OF_VALUE where LOV_NAME = 'OFAC_RESEND_DATE'"); return (r!=null && (Integer)r[1] > 0) ? r[0].toString() : ""; }
-    private String getOfacResendWeek(OfacDbRoutines db) throws Exception { Object[] r = db.fetchRecords("select ceil(decfloAt(days(date(value)) - days(date('2012-12-29')))/decfloat(7)) from COMPANYDB.LIST_OF_VALUE where LOV_NAME = 'OFAC_RESEND_DATE'"); return (r!=null && (Integer)r[1] > 0) ? r[0].toString() : ""; }
-    private String getOfacResendDay(OfacDbRoutines db) throws Exception { Object[] r = db.fetchRecords("select dayofweek_iso(date(value)) from COMPANYDB.LIST_OF_VALUE where LOV_NAME = 'OFAC_RESEND_DATE'"); return (r!=null && (Integer)r[1] > 0) ? r[0].toString() : ""; }
-    private String getOfacStandardReportWeek(OfacDbRoutines db) throws Exception { Object[] r = db.fetchRecords("select ceil(decfloAt((days(current timestamp) - days(date('2012-12-29')))/decfloat(7))) from sysibm.sysdummy1"); return (r!=null && (Integer)r[1] > 0) ? r[0].toString() : ""; }
-    private String getStandardisedFileDate(OfacDbRoutines db, String fileDate) throws Exception { Object[] r = db.fetchRecords("select char((date('" + fileDate + "') - 1 day),iso) from sysibm.sysdummy1"); return (r!=null && (Integer)r[1] > 0) ? r[0].toString() : ""; }
-    private int resetResendDate(OfacDbRoutines db) throws Exception { return db.updateRecords("update COMPANYDB.LIST_OF_VALUE set VALUE=NULL where LOV_NAME = 'OFAC_RESEND_DATE'"); }
+    /**
+     * Fetches resend-related information from the database
+     * and writes it to an output text file.
+     */
+    private void fetchPrimerData(Connection conn, String outputFile) throws Exception {
+        String query = "SELECT RESEND_DATE, REPORT_WEEK, REPORT_DAY " +
+                "FROM CMEDB.OFAC_PRIMER_CONTROL WHERE STATUS = 'ACTIVE'";
+
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(query);
+             BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
+
+            writer.write("RESEND_DATE,REPORT_WEEK,REPORT_DAY");
+            writer.newLine();
+
+            while (rs.next()) {
+                String line = rs.getString("RESEND_DATE") + "," +
+                        rs.getString("REPORT_WEEK") + "," +
+                        rs.getString("REPORT_DAY");
+                writer.write(line);
+                writer.newLine();
+            }
+
+            log.info("Primer data written to {}", outputFile);
+        }
+    }
+
+    /**
+     * Resets resend date and flags in the control table.
+     */
+    private void resetResendDate(Connection conn) throws Exception {
+        String updateQuery = "UPDATE CMEDB.OFAC_PRIMER_CONTROL " +
+                "SET RESEND_DATE = NULL, STATUS = 'READY' WHERE STATUS = 'ACTIVE'";
+
+        try (Statement stmt = conn.createStatement()) {
+            int updated = stmt.executeUpdate(updateQuery);
+            log.info("Reset resend date for {} record(s)", updated);
+        }
+    }
 }
